@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UDP Game Client (Browser Simulation)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .game-area {
+            width: 600px;
+            height: 400px;
+            border: 2px solid #333;
+            position: relative;
+            background-color: #e8f5e8;
+            margin: 20px auto;
+            overflow: hidden;
+        }
+        .player {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            position: absolute;
+            border: 2px solid #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: bold;
+            color: white;
+        }
+        .my-player {
+            background-color: #4CAF50;
+        }
+        .other-player {
+            background-color: #2196F3;
+        }
+        .controls {
+            text-align: center;
+            margin: 20px 0;
+        }
+        .controls button {
+            padding: 10px 15px;
+            margin: 5px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .controls button:hover {
+            background-color: #45a049;
+        }
+        .controls button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            text-align: center;
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+        }
+        .log {
+            height: 200px;
+            overflow-y: auto;
+            background-color: #000;
+            color: #0f0;
+            font-family: monospace;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .chat-container {
+            margin: 20px 0;
+        }
+        .chat-input {
+            width: 70%;
+            padding: 10px;
+            margin-right: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .chat-send {
+            padding: 10px 15px;
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .info {
+            background-color: #e7f3ff;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #2196F3;
+        }
+        .warning {
+            background-color: #fff3cd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #ffc107;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>UDP Game Client Test</h1>
+        
+        <div class="warning">
+            <strong>注意:</strong> ブラウザはUDP通信を直接サポートしていないため、これはWebSocketを使用したUDPシミュレーションです。
+            実際のUDPクライアントテストには別途ネイティブアプリケーションが必要です。
+        </div>
+
+        <div class="info">
+            <h3>UDP vs WebSocket の違い:</h3>
+            <ul>
+                <li><strong>UDP:</strong> 低遅延、順序保証なし、パケット独立性</li>
+                <li><strong>WebSocket:</strong> TCP上で動作、順序保証あり、接続指向</li>
+                <li><strong>UDP実装:</strong> 
+                    <ul>
+                        <li>バイナリパケット形式 (bincode)</li>
+                        <li>シーケンス番号による順序管理</li>
+                        <li>ACK/再送による信頼性制御</li>
+                        <li>ハートビート機能</li>
+                    </ul>
+                </li>
+            </ul>
+        </div>
+
+        <div class="status" id="status">
+            Status: Disconnected
+        </div>
+
+        <div class="controls">
+            <button onclick="connectToServer()" id="connectBtn">Connect to WebSocket Server</button>
+            <button onclick="disconnectFromServer()" id="disconnectBtn" disabled>Disconnect</button>
+            <button onclick="startUdpServer()" id="udpBtn">Start UDP Server</button>
+        </div>
+
+        <div class="game-area" id="gameArea" onclick="movePlayer(event)">
+            <!-- Players will appear here -->
+        </div>
+
+        <div class="controls">
+            <button onclick="performAction('attack')" id="attackBtn" disabled>Attack</button>
+            <button onclick="performAction('pickup')" id="pickupBtn" disabled>Pickup Item</button>
+        </div>
+
+        <div class="chat-container">
+            <input type="text" id="chatInput" placeholder="Enter chat message..." class="chat-input" disabled>
+            <button onclick="sendChat()" id="chatBtn" disabled class="chat-send">Send</button>
+        </div>
+
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let myPlayerId = null;
+        let players = {};
+        let isConnected = false;
+
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateStatus(status) {
+            document.getElementById('status').textContent = `Status: ${status}`;
+        }
+
+        function updateButtons(connected) {
+            document.getElementById('connectBtn').disabled = connected;
+            document.getElementById('disconnectBtn').disabled = !connected;
+            document.getElementById('attackBtn').disabled = !connected;
+            document.getElementById('pickupBtn').disabled = !connected;
+            document.getElementById('chatInput').disabled = !connected;
+            document.getElementById('chatBtn').disabled = !connected;
+        }
+
+        function startUdpServer() {
+            log("UDPサーバーを起動するには:");
+            log("ターミナルで: PROTOCOL=udp cargo run");
+            log("または: PROTOCOL=udp PORT=8080 cargo run");
+            log("WebSocketサーバーとは独立して動作します");
+        }
+
+        function connectToServer() {
+            try {
+                ws = new WebSocket('ws://127.0.0.1:8080');
+                
+                ws.onopen = function(event) {
+                    isConnected = true;
+                    updateStatus('Connected to WebSocket');
+                    updateButtons(true);
+                    log('WebSocket接続が確立されました');
+                };
+
+                ws.onmessage = function(event) {
+                    try {
+                        const message = JSON.parse(event.data);
+                        handleMessage(message);
+                    } catch (e) {
+                        log(`メッセージ解析エラー: ${e.message}`);
+                    }
+                };
+
+                ws.onclose = function(event) {
+                    isConnected = false;
+                    updateStatus('Disconnected');
+                    updateButtons(false);
+                    log(`WebSocket接続が切断されました (code: ${event.code})`);
+                };
+
+                ws.onerror = function(error) {
+                    log(`WebSocketエラー: ${error}`);
+                };
+
+            } catch (e) {
+                log(`接続エラー: ${e.message}`);
+            }
+        }
+
+        function disconnectFromServer() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function handleMessage(message) {
+            log(`受信: ${JSON.stringify(message)}`);
+            
+            if (message.PlayerJoin) {
+                const { player_id, name } = message.PlayerJoin;
+                if (!myPlayerId) {
+                    myPlayerId = player_id;
+                    log(`あなたのプレイヤーID: ${player_id}`);
+                }
+                log(`プレイヤー参加: ${name} (${player_id})`);
+            } else if (message.PlayerLeave) {
+                const { player_id } = message.PlayerLeave;
+                if (players[player_id]) {
+                    delete players[player_id];
+                    updateGameArea();
+                }
+                log(`プレイヤー退出: ${player_id}`);
+            } else if (message.PlayerMove) {
+                const { player_id, x, y } = message.PlayerMove;
+                if (players[player_id]) {
+                    players[player_id].x = x;
+                    players[player_id].y = y;
+                    updateGameArea();
+                }
+                log(`プレイヤー移動: ${player_id} -> (${x}, ${y})`);
+            } else if (message.GameState) {
+                const { players: playerList, timestamp } = message.GameState;
+                players = {};
+                playerList.forEach(player => {
+                    players[player.id] = player;
+                });
+                updateGameArea();
+                log(`ゲーム状態更新: ${playerList.length}人のプレイヤー`);
+            } else if (message.Chat) {
+                const { player_id, message: chatMessage } = message.Chat;
+                const playerName = players[player_id]?.name || player_id;
+                log(`チャット [${playerName}]: ${chatMessage}`);
+            } else if (message.Error) {
+                log(`エラー: ${message.Error.message}`);
+            }
+        }
+
+        function updateGameArea() {
+            const gameArea = document.getElementById('gameArea');
+            gameArea.innerHTML = '';
+            
+            Object.values(players).forEach(player => {
+                const playerDiv = document.createElement('div');
+                playerDiv.className = `player ${player.id === myPlayerId ? 'my-player' : 'other-player'}`;
+                playerDiv.style.left = `${player.x}px`;
+                playerDiv.style.top = `${player.y}px`;
+                playerDiv.textContent = player.name.substr(-2); // Show last 2 chars
+                playerDiv.title = `${player.name} - HP: ${player.health}, Score: ${player.score}`;
+                gameArea.appendChild(playerDiv);
+            });
+        }
+
+        function movePlayer(event) {
+            if (!isConnected || !myPlayerId) return;
+            
+            const gameArea = event.currentTarget;
+            const rect = gameArea.getBoundingClientRect();
+            const x = Math.max(0, Math.min(580, event.clientX - rect.left - 10)); // 10px offset for player center
+            const y = Math.max(0, Math.min(380, event.clientY - rect.top - 10));
+            
+            const moveMessage = {
+                PlayerMove: {
+                    player_id: myPlayerId,
+                    x: x,
+                    y: y
+                }
+            };
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(moveMessage));
+                log(`移動送信: (${x}, ${y})`);
+            }
+        }
+
+        function performAction(action) {
+            if (!isConnected || !myPlayerId) return;
+            
+            const actionMessage = {
+                PlayerAction: {
+                    player_id: myPlayerId,
+                    action: action,
+                    data: {}
+                }
+            };
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(actionMessage));
+                log(`アクション送信: ${action}`);
+            }
+        }
+
+        function sendChat() {
+            const chatInput = document.getElementById('chatInput');
+            const message = chatInput.value.trim();
+            
+            if (!message || !isConnected || !myPlayerId) return;
+            
+            const chatMessage = {
+                Chat: {
+                    player_id: myPlayerId,
+                    message: message
+                }
+            };
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(chatMessage));
+                log(`チャット送信: ${message}`);
+                chatInput.value = '';
+            }
+        }
+
+        // Enable Enter key for chat
+        document.getElementById('chatInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendChat();
+            }
+        });
+
+        // Initial log
+        log('UDP Game Client Test 準備完了');
+        log('接続するにはConnectボタンを押してください');
+        log('UDPサーバーをテストするには "Start UDP Server" を参照');
+    </script>
+</body>
+</html>
